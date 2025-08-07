@@ -28,7 +28,7 @@ def call_musicgen(audio_path, duration, api_token):
         "https://api.replicate.com/v1/predictions",
         headers=headers,
         json={
-            "version": "d2e01f06-2251-4e7c-b04a-9d8dfda4f286",  # MusicGen-small
+            "version": "fb9e8d05c43c72d3e65faddb7ec5e3b7e2e750ec98e15de0f6ed6b8cf67f3c4c",
             "input": {
                 "audio": b64_audio,
                 "duration": duration
