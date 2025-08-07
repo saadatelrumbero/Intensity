@@ -1,13 +1,17 @@
 import streamlit as st
-from pydub import AudioSegment
+import ffmpeg
 import io
+import os
 import tempfile
-import math
 
 st.set_page_config(page_title="Song Extender AI", layout="centered")
 st.title("🎵 Extend a Section of a Song Seamlessly")
 
 uploaded_file = st.file_uploader("Upload your MP3 file", type=["mp3"])
+
+def time_to_seconds(t):
+    parts = t.strip().split(":")
+    return int(parts[0]) * 60 + int(parts[1])
 
 if uploaded_file:
     start_time = st.text_input("Start time (e.g. 2:30)", "2:30")
@@ -15,40 +19,51 @@ if uploaded_file:
     new_duration_sec = st.number_input("How long should this section be after extension? (in seconds)", min_value=5, step=1, value=20)
 
     if st.button("🔁 Extend Section"):
-        with st.spinner("Processing audio..."):
+        with st.spinner("Processing..."):
             try:
-                # Load original MP3
-                audio = AudioSegment.from_file(uploaded_file, format="mp3")
+                with tempfile.TemporaryDirectory() as tmpdir:
+                    input_path = os.path.join(tmpdir, "input.mp3")
+                    with open(input_path, "wb") as f:
+                        f.write(uploaded_file.read())
 
-                # Convert time inputs to milliseconds
-                def time_to_ms(t):
-                    parts = t.strip().split(":")
-                    return (int(parts[0]) * 60 + int(parts[1])) * 1000
+                    s_sec = time_to_seconds(start_time)
+                    e_sec = time_to_seconds(end_time)
+                    section_duration = e_sec - s_sec
 
-                start_ms = time_to_ms(start_time)
-                end_ms = time_to_ms(end_time)
+                    # Create temporary output paths
+                    before_path = os.path.join(tmpdir, "before.mp3")
+                    looped_path = os.path.join(tmpdir, "looped.mp3")
+                    after_path = os.path.join(tmpdir, "after.mp3")
+                    final_path = os.path.join(tmpdir, "output.mp3")
 
-                # Extract parts
-                before = audio[:start_ms]
-                section = audio[start_ms:end_ms]
-                after = audio[end_ms:]
+                    # Split before
+                    ffmpeg.input(input_path, ss=0, to=s_sec).output(before_path).run(quiet=True, overwrite_output=True)
 
-                # Calculate how many times to repeat
-                section_duration = end_ms - start_ms
-                repeat_count = math.ceil(new_duration_sec * 1000 / section_duration)
-                extended_section = section * repeat_count
-                extended_section = extended_section[:new_duration_sec * 1000]  # trim to exact
+                    # Extract section to loop
+                    ffmpeg.input(input_path, ss=s_sec, to=e_sec).output(looped_path).run(quiet=True, overwrite_output=True)
 
-                # Rebuild the full song
-                final = before + extended_section + after
+                    # Repeat section
+                    loop_count = (new_duration_sec + section_duration - 1) // section_duration  # Round up
+                    concat_list = '|'.join([looped_path]*loop_count)
+                    extended_loop_path = os.path.join(tmpdir, "extended_loop.mp3")
+                    os.system(f"ffmpeg -y -i "concat:{concat_list}" -t {new_duration_sec} -c copy {extended_loop_path}")
 
-                # Export to in-memory buffer
-                buffer = io.BytesIO()
-                final.export(buffer, format="mp3")
-                buffer.seek(0)
+                    # Split after
+                    ffmpeg.input(input_path, ss=e_sec).output(after_path).run(quiet=True, overwrite_output=True)
 
-                st.success("Done! Here's your extended song:")
-                st.audio(buffer.read(), format='audio/mp3')
+                    # Concatenate all
+                    concat_txt = os.path.join(tmpdir, "concat.txt")
+                    with open(concat_txt, "w") as f:
+                        f.write(f"file '{before_path}'\n")
+                        f.write(f"file '{extended_loop_path}'\n")
+                        f.write(f"file '{after_path}'\n")
+
+                    ffmpeg.input(concat_txt, format='concat', safe=0).output(final_path, c='copy').run(quiet=True, overwrite_output=True)
+
+                    # Serve final audio
+                    with open(final_path, "rb") as f:
+                        st.success("✅ Here's your extended song:")
+                        st.audio(f.read(), format='audio/mp3')
 
             except Exception as e:
                 st.error(f"Error: {str(e)}")
