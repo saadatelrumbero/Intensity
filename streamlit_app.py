@@ -34,6 +34,7 @@ if uploaded_file:
                     before_path = os.path.join(tmpdir, "before.mp3")
                     looped_path = os.path.join(tmpdir, "looped.mp3")
                     after_path = os.path.join(tmpdir, "after.mp3")
+                    extended_loop_path = os.path.join(tmpdir, "extended_loop.mp3")
                     final_path = os.path.join(tmpdir, "output.mp3")
 
                     # Split before
@@ -42,16 +43,18 @@ if uploaded_file:
                     # Extract section to loop
                     ffmpeg.input(input_path, ss=s_sec, to=e_sec).output(looped_path).run(quiet=True, overwrite_output=True)
 
-                    # Repeat section
-                    loop_count = (new_duration_sec + section_duration - 1) // section_duration  # Round up
-                    concat_list = '|'.join([looped_path]*loop_count)
-                    extended_loop_path = os.path.join(tmpdir, "extended_loop.mp3")
-                    os.system(f"ffmpeg -y -i "concat:{concat_list}" -t {new_duration_sec} -c copy {extended_loop_path}")
+                    # Repeat section manually (naive binary copy-based)
+                    with open(looped_path, 'rb') as lf:
+                        looped_bytes = lf.read()
+                    repeat_count = (new_duration_sec * 1000) // (section_duration * 1000)
+                    extended_data = looped_bytes * repeat_count
+                    with open(extended_loop_path, 'wb') as f:
+                        f.write(extended_data[:new_duration_sec * 1000])
 
                     # Split after
                     ffmpeg.input(input_path, ss=e_sec).output(after_path).run(quiet=True, overwrite_output=True)
 
-                    # Concatenate all
+                    # Concatenate all parts
                     concat_txt = os.path.join(tmpdir, "concat.txt")
                     with open(concat_txt, "w") as f:
                         f.write(f"file '{before_path}'\n")
