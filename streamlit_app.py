@@ -1,86 +1,103 @@
 import streamlit as st
 import ffmpeg
-import librosa
-import soundfile as sf
 import os
 import tempfile
+import base64
+import requests
 
-st.set_page_config(page_title="Song Extender AI", layout="centered")
-st.title("🎵 Extend a Section of a Song Seamlessly (Beat-Aligned)")
+st.set_page_config(page_title="AI Music Extender", layout="centered")
+st.title("🎶 AI Music Section Extender with MusicGen (Replicate API)")
 
 uploaded_file = st.file_uploader("Upload your MP3 file", type=["mp3"])
+replicate_api_token = st.text_input("Paste your Replicate API token (keep private)", type="password")
 
 def time_to_seconds(t):
     parts = t.strip().split(":")
     return int(parts[0]) * 60 + int(parts[1])
 
-def snap_to_nearest_beat(times, target_time):
-    return min(times, key=lambda t: abs(t - target_time))
+def call_musicgen(audio_path, duration, api_token):
+    with open(audio_path, "rb") as f:
+        b64_audio = base64.b64encode(f.read()).decode("utf-8")
 
-if uploaded_file:
+    headers = {
+        "Authorization": f"Token {api_token}",
+        "Content-Type": "application/json"
+    }
+
+    response = requests.post(
+        "https://api.replicate.com/v1/predictions",
+        headers=headers,
+        json={
+            "version": "d2e01f06-2251-4e7c-b04a-9d8dfda4f286",  # MusicGen-small
+            "input": {
+                "audio": b64_audio,
+                "duration": duration
+            }
+        }
+    )
+
+    if response.status_code != 201:
+        raise Exception(f"Replicate API error: {response.text}")
+
+    prediction = response.json()
+    prediction_url = prediction["urls"]["get"]
+
+    # Poll until complete
+    while True:
+        poll_resp = requests.get(prediction_url, headers=headers)
+        result = poll_resp.json()
+        if result["status"] == "succeeded":
+            return result["output"]
+        elif result["status"] == "failed":
+            raise Exception("MusicGen generation failed.")
+        st.info("⏳ Generating music...")
+        import time
+        time.sleep(3)
+
+if uploaded_file and replicate_api_token:
     start_time = st.text_input("Start time (e.g. 2:30)", "2:30")
     end_time = st.text_input("End time (e.g. 2:40)", "2:40")
     new_duration_sec = st.number_input("How long should this section be after extension? (in seconds)", min_value=5, step=1, value=20)
 
-    if st.button("🔁 Extend Section"):
-        with st.spinner("Analyzing and Processing..."):
+    if st.button("Generate AI Extension"):
+        with st.spinner("Processing and contacting MusicGen..."):
             try:
                 with tempfile.TemporaryDirectory() as tmpdir:
                     input_path = os.path.join(tmpdir, "input.mp3")
-                    wav_path = os.path.join(tmpdir, "converted.wav")
-
                     with open(input_path, "wb") as f:
                         f.write(uploaded_file.read())
 
-                    # Convert MP3 to WAV for librosa
-                    ffmpeg.input(input_path).output(wav_path).run(overwrite_output=True, quiet=True)
-
-                    # Beat tracking with librosa
-                    y, sr = librosa.load(wav_path)
-                    tempo, beat_frames = librosa.beat.beat_track(y=y, sr=sr)
-                    beat_times = librosa.frames_to_time(beat_frames, sr=sr)
-
-                    # Snap input times to nearest beats
                     s_sec = time_to_seconds(start_time)
                     e_sec = time_to_seconds(end_time)
-                    s_beat = snap_to_nearest_beat(beat_times, s_sec)
-                    e_beat = snap_to_nearest_beat(beat_times, e_sec)
 
-                    section_duration = e_beat - s_beat
-
-                    # Export beat-aligned sections
                     before_path = os.path.join(tmpdir, "before.mp3")
                     section_path = os.path.join(tmpdir, "section.mp3")
                     after_path = os.path.join(tmpdir, "after.mp3")
-                    extended_section_path = os.path.join(tmpdir, "extended_section.mp3")
+                    ai_generated_path = os.path.join(tmpdir, "ai_section.mp3")
                     final_path = os.path.join(tmpdir, "output.mp3")
 
-                    ffmpeg.input(input_path, ss=0, to=s_beat).output(before_path).run(overwrite_output=True, quiet=True)
-                    ffmpeg.input(input_path, ss=s_beat, to=e_beat).output(section_path).run(overwrite_output=True, quiet=True)
-                    ffmpeg.input(input_path, ss=e_beat).output(after_path).run(overwrite_output=True, quiet=True)
+                    ffmpeg.input(input_path, ss=0, to=s_sec).output(before_path).run(overwrite_output=True, quiet=True)
+                    ffmpeg.input(input_path, ss=s_sec, to=e_sec).output(section_path).run(overwrite_output=True, quiet=True)
+                    ffmpeg.input(input_path, ss=e_sec).output(after_path).run(overwrite_output=True, quiet=True)
 
-                    # Repeat the section to reach desired duration
-                    repeat_count = max(1, round(new_duration_sec / section_duration))
-                    section_list_txt = os.path.join(tmpdir, "section_list.txt")
-                    with open(section_list_txt, "w") as f:
-                        for _ in range(repeat_count):
-                            f.write(f"file '{section_path}'\n")
+                    st.info("🔗 Sending audio section to Replicate MusicGen...")
+                    ai_url = call_musicgen(section_path, new_duration_sec, replicate_api_token)
 
-                    ffmpeg.input(section_list_txt, format='concat', safe=0).output(extended_section_path, c='copy').run(overwrite_output=True, quiet=True)
+                    r = requests.get(ai_url)
+                    with open(ai_generated_path, "wb") as f:
+                        f.write(r.content)
 
-                    # Final concatenation
-                    final_concat_list = os.path.join(tmpdir, "final_concat.txt")
-                    with open(final_concat_list, "w") as f:
+                    concat_list_path = os.path.join(tmpdir, "concat.txt")
+                    with open(concat_list_path, "w") as f:
                         f.write(f"file '{before_path}'\n")
-                        f.write(f"file '{extended_section_path}'\n")
+                        f.write(f"file '{ai_generated_path}'\n")
                         f.write(f"file '{after_path}'\n")
 
-                    ffmpeg.input(final_concat_list, format='concat', safe=0).output(final_path, c='copy').run(overwrite_output=True, quiet=True)
+                    ffmpeg.input(concat_list_path, format='concat', safe=0).output(final_path, c='copy').run(overwrite_output=True, quiet=True)
 
-                    # Serve final song
                     with open(final_path, "rb") as f:
-                        st.success("✅ Here's your extended, beat-aligned song:")
-                        st.audio(f.read(), format='audio/mp3')
+                        st.success("✅ Here's your AI-extended track:")
+                        st.audio(f.read(), format="audio/mp3")
 
             except Exception as e:
                 st.error(f"❌ Error: {str(e)}")
