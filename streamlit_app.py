@@ -1,6 +1,5 @@
 import streamlit as st
 import ffmpeg
-import io
 import os
 import tempfile
 
@@ -30,38 +29,39 @@ if uploaded_file:
                     e_sec = time_to_seconds(end_time)
                     section_duration = e_sec - s_sec
 
-                    # Create temporary output paths
+                    # Paths
                     before_path = os.path.join(tmpdir, "before.mp3")
-                    looped_path = os.path.join(tmpdir, "looped.mp3")
+                    section_path = os.path.join(tmpdir, "section.mp3")
                     after_path = os.path.join(tmpdir, "after.mp3")
-                    extended_loop_path = os.path.join(tmpdir, "extended_loop.mp3")
+                    extended_section_path = os.path.join(tmpdir, "extended_section.mp3")
                     final_path = os.path.join(tmpdir, "output.mp3")
 
-                    # Split before
-                    ffmpeg.input(input_path, ss=0, to=s_sec).output(before_path).run(quiet=True, overwrite_output=True)
+                    # Extract before, section, and after
+                    ffmpeg.input(input_path, ss=0, to=s_sec).output(before_path).run(overwrite_output=True, quiet=True)
+                    ffmpeg.input(input_path, ss=s_sec, to=e_sec).output(section_path).run(overwrite_output=True, quiet=True)
+                    ffmpeg.input(input_path, ss=e_sec).output(after_path).run(overwrite_output=True, quiet=True)
 
-                    # Extract section to loop
-                    ffmpeg.input(input_path, ss=s_sec, to=e_sec).output(looped_path).run(quiet=True, overwrite_output=True)
+                    # Determine repeat count
+                    repeat_count = max(1, round(new_duration_sec / section_duration))
 
-                    # Repeat section manually (naive binary copy-based)
-                    with open(looped_path, 'rb') as lf:
-                        looped_bytes = lf.read()
-                    repeat_count = (new_duration_sec * 1000) // (section_duration * 1000)
-                    extended_data = looped_bytes * repeat_count
-                    with open(extended_loop_path, 'wb') as f:
-                        f.write(extended_data[:new_duration_sec * 1000])
+                    # Create concat list file for repeated section
+                    section_list_txt = os.path.join(tmpdir, "section_list.txt")
+                    with open(section_list_txt, "w") as f:
+                        for _ in range(repeat_count):
+                            f.write(f"file '{section_path}'\n")
 
-                    # Split after
-                    ffmpeg.input(input_path, ss=e_sec).output(after_path).run(quiet=True, overwrite_output=True)
+                    # Concatenate repeated section
+                    ffmpeg.input(section_list_txt, format='concat', safe=0).output(extended_section_path, c='copy').run(overwrite_output=True, quiet=True)
 
-                    # Concatenate all parts
-                    concat_txt = os.path.join(tmpdir, "concat.txt")
-                    with open(concat_txt, "w") as f:
+                    # Create final concat list
+                    final_concat_list = os.path.join(tmpdir, "final_concat.txt")
+                    with open(final_concat_list, "w") as f:
                         f.write(f"file '{before_path}'\n")
-                        f.write(f"file '{extended_loop_path}'\n")
+                        f.write(f"file '{extended_section_path}'\n")
                         f.write(f"file '{after_path}'\n")
 
-                    ffmpeg.input(concat_txt, format='concat', safe=0).output(final_path, c='copy').run(quiet=True, overwrite_output=True)
+                    # Generate final output
+                    ffmpeg.input(final_concat_list, format='concat', safe=0).output(final_path, c='copy').run(overwrite_output=True, quiet=True)
 
                     # Serve final audio
                     with open(final_path, "rb") as f:
@@ -69,4 +69,4 @@ if uploaded_file:
                         st.audio(f.read(), format='audio/mp3')
 
             except Exception as e:
-                st.error(f"Error: {str(e)}")
+                st.error(f"❌ Error: {str(e)}")
